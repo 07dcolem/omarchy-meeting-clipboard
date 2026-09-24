@@ -1,0 +1,4 @@
+source:     meetup-join-url
+meeting_id: 4128290799753
+passcode:   Sd94S45U
+join_url:   https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZGE4ZmY1MGYtMzAxMS00OGE2LThkMWYtYWI1OTUxNGUyMDgy%40thread.v2/0?context=%7b%22Tid%22%3a%2289522aa1-1984-4d7a-96ba-2ac240623b6b%22%2c%22Oid%22%3a%22d79442ba-06b6-42e7-ac83-78e61f2b0fd7%22%7d
