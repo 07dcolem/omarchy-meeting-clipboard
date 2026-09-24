@@ -39,6 +39,12 @@ STDERR_MAX = 4096
 CLIP_TIMEOUT = 3.0
 NOTIFY_TIMEOUT = 2.0
 FLATPAK_TIMEOUT = 5.0
+# Omarchy's clipboard panel writes this file. Deleting an entry updates the
+# file and leaves the Wayland selection alone, so wl-paste can still return
+# an invite the panel no longer lists.
+HISTORY_MAX = 2_000_000
+HISTORY_ENTRIES = 500
+HISTORY_RETRY_S = 0.15
 
 TEAMS_HOSTS = frozenset(
     {"teams.microsoft.com", "teams.live.com", "teams.cloud.microsoft"}
@@ -139,6 +145,10 @@ NOTICES = {
     ("not-found", ""): (
         "Meeting clipboard",
         "No Teams or Zoom join link was found.",
+    ),
+    ("removed", ""): (
+        "Meeting clipboard",
+        "That invite was removed from the clipboard.",
     ),
     ("ambiguous", ""): (
         "Meeting clipboard",
@@ -699,6 +709,111 @@ def read_clipboard() -> tuple[str, str]:
     return "", "unavailable"
 
 
+def clipboard_history_path() -> Optional[str]:
+    """Path of the clipboard panel's history, or None when HOME is unusable."""
+    home = os.environ.get("HOME", "")
+    if not home.startswith("/") or any(char in home for char in ("\n", "\r", "\x00")):
+        return None
+    return os.path.join(home, ".local", "state", "omarchy", "clipboard-history.json")
+
+
+def _norm_clip(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _read_history_file(path: str) -> tuple[str, bytes]:
+    """Return (state, bytes). state is missing, unreadable, or ok.
+
+    A missing panel means there is nothing to check. An unreadable file is
+    also not a reason to skip a join: a broken history must not disable the click.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return "missing", b""
+    except OSError:
+        return "unreadable", b""
+    try:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_size > HISTORY_MAX
+        ):
+            return "unreadable", b""
+        os.set_blocking(fd, True)
+        buf = bytearray()
+        while len(buf) <= HISTORY_MAX:
+            chunk = os.read(fd, min(65536, HISTORY_MAX + 1 - len(buf)))
+            if not chunk:
+                break
+            buf.extend(chunk)
+        if len(buf) > HISTORY_MAX:
+            return "unreadable", b""
+        return "ok", bytes(buf)
+    finally:
+        os.close(fd)
+
+
+def _history_texts(data: bytes) -> Optional[set[str]]:
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    texts: set[str] = set()
+    for item in parsed[:HISTORY_ENTRIES]:
+        if not isinstance(item, dict) or item.get("type") != "text":
+            continue
+        text = item.get("text")
+        if not isinstance(text, str) or len(text) > CLIP_MAX:
+            continue
+        norm = _norm_clip(text)
+        if norm:
+            texts.add(norm)
+    return texts
+
+
+def removed_from_panel(
+    text: str,
+    path: Optional[str] = None,
+    retry_s: float = HISTORY_RETRY_S,
+) -> bool:
+    """True when the clipboard panel exists and no longer lists this text.
+
+    A copy can reach wl-paste before the panel writes it down, so a miss is
+    checked twice. A panel that is not installed, or a history file that
+    cannot be read, does not block the join.
+    """
+    if path is None:
+        path = clipboard_history_path()
+    if not path:
+        return False
+    norm = _norm_clip(text)
+    if not norm:
+        return False
+
+    def listed() -> Optional[bool]:
+        state, data = _read_history_file(path)
+        if state != "ok":
+            return None
+        texts = _history_texts(data)
+        if texts is None:
+            return None
+        return norm in texts
+
+    found = listed()
+    if found is None or found:
+        return False
+    if retry_s > 0:
+        time.sleep(retry_s)
+        found = listed()
+        if found is None or found:
+            return False
+    return True
+
+
 def flatpak_installed(app_id: str, executable: Callable[[str], bool] = root_owned_executable) -> bool:
     if app_id not in {TEAMS_FLATPAK, ZOOM_FLATPAK} or not executable(FLATPAK_BIN):
         return False
@@ -824,6 +939,10 @@ def _plugin_main() -> int:
         emit_status(public_status("not-found"))
         notify("not-found")
         return 1
+    if removed_from_panel(text):
+        emit_status(public_status("removed"))
+        notify("removed")
+        return 1
 
     argv = launch_argv(meeting)
     if argv is None:
@@ -866,25 +985,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_text(args: argparse.Namespace) -> tuple[str, str]:
+def load_text(args: argparse.Namespace) -> tuple[str, str, bool]:
+    """Return (text, problem, from_clipboard)."""
     if args.text is not None:
-        return args.text, ""
+        return args.text, "", False
     if args.file:
         with open(args.file, "rb") as handle:
             data = handle.read(CLIP_MAX + 1)
         if len(data) > CLIP_MAX:
-            return "", "too-large"
+            return "", "too-large", False
         try:
-            return data.decode("utf-8"), ""
+            return data.decode("utf-8"), "", False
         except UnicodeDecodeError:
-            return "", "unavailable"
+            return "", "unavailable", False
     if args.stdin or not sys.stdin.isatty():
         data = sys.stdin.read(CLIP_MAX + 1)
         if len(data) > CLIP_MAX:
-            return "", "too-large"
+            return "", "too-large", False
         if data.strip():
-            return data, ""
-    return read_clipboard()
+            return data, "", False
+    text, problem = read_clipboard()
+    return text, problem, True
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -892,7 +1013,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.plugin:
         return plugin_main()
     _install_stop_handlers()
-    text, problem = load_text(args)
+    text, problem, from_clipboard = load_text(args)
     if problem == "too-large":
         print("clipboard text exceeds the size limit", file=sys.stderr)
         return 1
@@ -919,6 +1040,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(message, file=sys.stderr)
         if not args.no_notify and not args.dry_run:
             notify("ambiguous" if meeting.provider == "ambiguous" else "not-found")
+        return 1
+    if from_clipboard and removed_from_panel(text):
+        if not args.json:
+            print("that invite was removed from the clipboard", file=sys.stderr)
+        if not args.no_notify and not args.dry_run:
+            notify("removed")
         return 1
 
     if args.print_url and not args.json:

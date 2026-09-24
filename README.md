@@ -52,8 +52,11 @@ Copy a meeting invite, then left-click the icon. A notification names the result
 | `https://….zoom.us/j/<id>`, `/wc/join/<id>`, `/my/<name>`, or `zoommtg://zoom.us/join?confno=<id>` | Opens that meeting in Zoom. |
 | A labeled meeting id of 9 to 11 digits and no join link | Nothing opens. |
 | A Teams link and a Zoom link, two different meetings, or a Zoom link beside a different 12 to 16 digit id | Nothing opens. |
+| An invite you deleted from the clipboard panel | Nothing opens. |
 
 Zoom publishes meeting ids of 9, 10, or 11 digits. Older Teams ids use that same length, so a bare number there is not enough to choose an app. Twelve digits and longer are Teams. A Zoom invite still joins when it includes a Zoom link, which is the usual invite.
+
+Deleting an entry in the clipboard panel takes it off that list immediately. The previous copy can still be pasted by other programs until something else is copied. The click follows the panel: a deleted invite does not open Teams or Zoom.
 
 When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A Zoom link keeps the `pwd` value already on that link. The separate human passcode in the invite is not copied into `pwd`.
 
@@ -61,7 +64,7 @@ The notification says one of: Opening Teams, Opening Zoom, copy an invite first,
 
 ## What the click runs
 
-The icon starts `/usr/bin/python3 -I -S` on `teams-join-from-clipboard.py --plugin`.
+The icon starts `/usr/bin/python3 -I -S` on `teams-join-from-clipboard.py --plugin`. Before anything is opened, that process checks the clipboard panel's list. An invite deleted from the panel is not opened, including when other programs can still paste the old copy.
 
 That process reads clipboard text, at most 64 KiB, with a three-second deadline. A larger clipboard is refused and not parsed. It tries `wl-paste` for `text/plain`, then one untyped `wl-paste` read when that returns nothing. Images and other non-text are not parsed. The notification then says the clipboard could not be read. The clipboard text is not passed as a program argument.
 

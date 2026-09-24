@@ -381,6 +381,49 @@ def test_manifest() -> int:
     return 0
 
 
+def test_removed_from_panel() -> int:
+    import tempfile
+
+    failed = 0
+    invite = "Meeting ID: 111 222 333 444 5\n"
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "clipboard-history.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump([{"type": "text", "text": invite}], handle)
+        if mod.removed_from_panel(invite.strip(), path=path, retry_s=0):
+            failed += 1
+            print("FAIL listed invite was treated as removed")
+        else:
+            print("ok   listed invite stays joinable")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump([{"type": "text", "text": "hello"}], handle)
+        if not mod.removed_from_panel(invite.strip(), path=path, retry_s=0):
+            failed += 1
+            print("FAIL deleted invite was still joinable")
+        else:
+            print("ok   deleted invite is not joinable")
+        os.remove(path)
+        if mod.removed_from_panel(invite.strip(), path=path, retry_s=0):
+            failed += 1
+            print("FAIL missing panel blocked a join")
+        else:
+            print("ok   missing panel does not block")
+        link = os.path.join(directory, "history-link")
+        os.symlink("/etc/passwd", link)
+        if mod.removed_from_panel(invite.strip(), path=link, retry_s=0):
+            failed += 1
+            print("FAIL symlink history blocked a join")
+        else:
+            print("ok   symlink history does not block")
+    # A file passed on the command line is not the live clipboard.
+    if mod.removed_from_panel(invite, path=os.devnull, retry_s=0):
+        failed += 1
+        print("FAIL unreadable history blocked a join")
+    else:
+        print("ok   unreadable history does not block")
+    return failed
+
+
 def test_cli_dry_run() -> int:
     import subprocess
 
@@ -404,6 +447,7 @@ def main() -> int:
     failed += test_status_hides_meeting_material()
     failed += test_bounds()
     failed += test_manifest()
+    failed += test_removed_from_panel()
     failed += test_cli_dry_run()
     return 1 if failed else 0
 
