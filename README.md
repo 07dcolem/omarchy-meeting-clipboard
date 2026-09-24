@@ -6,20 +6,22 @@
   <a href="https://github.com/tcballard/omarchy-badges"><img alt="Built for Omarchy: Plugin" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg"></a>
 </p>
 
-Calendar icon for the [Omarchy](https://omarchy.org/) bar. Left-click reads the clipboard once and opens the meeting in [teams-for-linux](https://github.com/IsmaelMartinez/teams-for-linux), or in Zoom when the clipboard contains a Zoom join link.
+Left-click reads the clipboard once and opens the meeting in [teams-for-linux](https://github.com/IsmaelMartinez/teams-for-linux), or in Zoom when the clipboard contains a Zoom join link. The icon on the [Omarchy](https://omarchy.org/) bar is the same calendar mark the clock uses, in a horizontal or vertical bar.
 
-The icon is the same calendar mark the clock uses, in a horizontal or vertical bar. Right-click and middle-click do nothing. The plugin runs inside `omarchy-shell`, unsandboxed, like every other shell plugin. It does not read the clipboard until that click.
+Right-click and middle-click do nothing. The plugin runs inside `omarchy-shell`, unsandboxed, like every other shell plugin. It does not read the clipboard until that click.
 
-## Install
+## Requirements
 
 Omarchy with the Quattro shell. These are already part of a normal Omarchy install: Python 3 at `/usr/bin/python3`, `wl-paste` from `wl-clipboard`, and `notify-send`. `xclip` or `xsel` are used only when `wl-paste` is not installed.
 
-Install the meeting app you want to open. This plugin does not install packages.
+Install the meeting app you want to open. This plugin does not install packages. teams-for-linux and Zoom are separate applications under their own licenses. This repository does not bundle them.
 
 | App | Accepted locations |
 |---|---|
 | teams-for-linux | `/usr/bin/teams-for-linux`, `/usr/local/bin/teams-for-linux`, `/opt/teams-for-linux/teams-for-linux`, or Flatpak `com.github.IsmaelMartinez.teams_for_linux` |
 | Zoom | `/usr/bin/zoom`, `/opt/zoom/ZoomLauncher`, or Flatpak `us.zoom.Zoom` |
+
+## Install
 
 ```bash
 omarchy plugin add https://github.com/07dcolem/omarchy-meeting-clipboard.git --enable
@@ -31,6 +33,14 @@ The icon lands on the right of the bar. Move it with:
 omarchy bar move io.github.07dcolem.meeting-clipboard --section right
 ```
 
+## Update
+
+```bash
+omarchy plugin update io.github.07dcolem.meeting-clipboard
+```
+
+That updates a checkout cloned by `omarchy plugin add`. It fetches the current upstream `HEAD`, fast-forwards when validation passes, and asks the shell to rescan plugins. A copy placed by hand, with no `.git` directory, is left as it is. The command updates this plugin only.
+
 ## Remove
 
 ```bash
@@ -39,7 +49,7 @@ omarchy plugin remove io.github.07dcolem.meeting-clipboard
 
 That unloads the widget. When the checkout was cloned with `omarchy plugin add`, the command deletes `~/.config/omarchy/plugins/io.github.07dcolem.meeting-clipboard`. A copy placed there by hand, with no `.git` directory, is moved to a hidden backup in `~/.config/omarchy/plugins/` instead of being deleted.
 
-The plugin writes no state file, cache, credential, systemd unit, or package, so none of those remain. teams-for-linux, Zoom, and Flatpak stay installed, including whatever configuration those applications already keep. The plugin does not edit Hyprland config, `shell.json`, or any other plugin. Omarchy's own enable and remove commands are what place and clear the bar entry.
+The plugin writes no state file, cache, credential, or package, and it adds no background service, so none of those remain. teams-for-linux, Zoom, and Flatpak stay installed, including whatever configuration those applications already keep. The plugin does not edit Hyprland config, `shell.json`, or any other plugin. Omarchy's own enable and remove commands are what place and clear the bar entry.
 
 ## Use
 
@@ -60,7 +70,20 @@ Deleting an entry in the clipboard panel takes it off that list immediately. The
 
 When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A Zoom link keeps the `pwd` value already on that link. The separate human passcode in the invite is not copied into `pwd`.
 
-The notification says one of: Opening Teams, Opening Zoom, copy an invite first, no join link found, the text could be either app, the clipboard is too large, the clipboard could not be read, the app is not installed, or the app did not start.
+The notification text is one of:
+
+- Opening Teams.
+- Opening Zoom.
+- Copy a Teams or Zoom invite, then click the calendar icon.
+- No Teams or Zoom join link was found.
+- That invite was removed from the clipboard.
+- That text could be Teams or Zoom. Copy a full join link.
+- The clipboard is too large to scan.
+- Could not read the clipboard.
+- teams-for-linux is not installed.
+- Zoom is not installed.
+- The meeting app did not start.
+- Could not scan the clipboard.
 
 ## What the click runs
 
@@ -72,7 +95,7 @@ The join link is then an argument to the meeting app, which is how teams-for-lin
 
 The plugin makes no network request and writes no file. teams-for-linux then loads the Teams host in the link. Zoom loads the `zoom.us` host in the link. Those requests belong to the meeting app.
 
-If the helper is still running after 12 seconds, the widget stops it. The meeting app, once started, is left running.
+If the helper is still running after 12 seconds, the widget stops it and notifies: The join helper did not finish. The meeting app, once started, is left running.
 
 ## Terminal
 
