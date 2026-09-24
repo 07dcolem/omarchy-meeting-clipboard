@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Sanity checks for the required invite format and a few cousins."""
+"""Parser, launch-argument, and clipboard-cap checks. Nothing here opens a meeting."""
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -12,16 +14,15 @@ mod = SourceFileLoader(
     str(Path(__file__).resolve().parent / "teams-join-from-clipboard.py"),
 ).load_module()
 
-REQUIRED = """Microsoft Teams Need help?<https://aka.ms/JoinTeamsMeeting?omkt=en-US>
-Join the meeting now<https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZGE4ZmY1MGYtMzAxMS00OGE2LThkMWYtYWI1OTUxNGUyMDgy%40thread.v2/0?context=%7b%22Tid%22%3a%2289522aa1-1984-4d7a-96ba-2ac240623b6b%22%2c%22Oid%22%3a%22d79442ba-06b6-42e7-ac83-78e61f2b0fd7%22%7d>
-Meeting ID: 412 829 079 975 3
-Passcode: Sd94S45U"""
+ROOT = Path(__file__).resolve().parent
+REQUIRED = (ROOT / "fixtures" / "required-invite.txt").read_text(encoding="utf-8")
 
 CASES = [
     (
         "required-outlook-angle-brackets",
         REQUIRED,
         {
+            "provider": "teams",
             "source": "meetup-join-url",
             "meeting_id": "4128290799753",
             "passcode": "Sd94S45U",
@@ -32,6 +33,7 @@ CASES = [
         "id-and-pass-only",
         "Please join.\nMeeting ID: 412 829 079 975 3\nPasscode: Sd94S45U\n",
         {
+            "provider": "teams",
             "source": "labeled-id",
             "meeting_id": "4128290799753",
             "passcode": "Sd94S45U",
@@ -42,6 +44,7 @@ CASES = [
         "short-meet-url-with-p",
         "Join: https://teams.microsoft.com/meet/31827829071516?p=AbCdEf12 extra",
         {
+            "provider": "teams",
             "source": "short-meet-url",
             "meeting_id": "31827829071516",
             "passcode": "AbCdEf12",
@@ -51,6 +54,7 @@ CASES = [
         "meetup-join-bare",
         "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22x%22%7d",
         {
+            "provider": "teams",
             "source": "meetup-join-url",
             "url_contains": "meetup-join/19%3ameeting_abc",
         },
@@ -59,6 +63,7 @@ CASES = [
         "german-labels",
         "Konferenz-ID: 123 456 789 012\nKennwort: Qw3rTy88",
         {
+            "provider": "teams",
             "source": "labeled-id",
             "meeting_id": "123456789012",
             "passcode": "Qw3rTy88",
@@ -68,38 +73,340 @@ CASES = [
         "dash-separated-id",
         "Meeting ID: 412-829-079-975-3\nPasscode: Sd94S45U",
         {
+            "provider": "teams",
             "meeting_id": "4128290799753",
             "passcode": "Sd94S45U",
         },
     ),
+    (
+        "teams-host-wins-on-short-id",
+        "https://teams.microsoft.com/meet/1234567890?p=AbCdEf12",
+        {
+            "provider": "teams",
+            "source": "short-meet-url",
+            "meeting_id": "1234567890",
+        },
+    ),
+]
+
+REJECTS = [
+    (
+        "zoom-overlap-length",
+        "Meeting ID: 812 3456 7890\nPasscode: 123456\n",
+        "ambiguous-length",
+    ),
+    (
+        "zoom-phrase-without-link",
+        "Join Zoom Meeting\nMeeting ID: 81234567890\nPasscode: 123456\n",
+        "ambiguous-length",
+    ),
+    (
+        "legacy-nine-digits",
+        "Meeting ID: 123 456 789\nPasscode: AbCdEf12\n",
+        "ambiguous-length",
+    ),
+]
+
+ZOOM_CASES = [
+    (
+        "zoom-join-link",
+        "Join Zoom Meeting\nhttps://us02web.zoom.us/j/81234567890?pwd=TokenOnly&uname=Pat\nMeeting ID: 812 3456 7890\nPasscode: 123456\n",
+        {
+            "provider": "zoom",
+            "source": "zoom-url",
+            "meeting_id": "81234567890",
+            "join_url": "https://us02web.zoom.us/j/81234567890?pwd=TokenOnly",
+        },
+    ),
+    (
+        "zoom-without-pwd-keeps-human-passcode-off-the-url",
+        "https://zoom.us/j/81234567890\nPasscode: 123456\n",
+        {
+            "provider": "zoom",
+            "join_url": "https://zoom.us/j/81234567890",
+        },
+    ),
+    (
+        "zoom-personal",
+        "https://company.zoom.us/my/alex.smith?uname=Pat",
+        {
+            "provider": "zoom",
+            "source": "zoom-personal",
+            "join_url": "https://company.zoom.us/my/alex.smith",
+        },
+    ),
+    (
+        "zoom-scheme",
+        "zoommtg://zoom.us/join?confno=81234567890&pwd=TokenOnly",
+        {
+            "provider": "zoom",
+            "join_url": "https://zoom.us/j/81234567890?pwd=TokenOnly",
+        },
+    ),
+    (
+        "web-client-path",
+        "https://us02web.zoom.us/wc/join/81234567890?pwd=TokenOnly",
+        {
+            "provider": "zoom",
+            "join_url": "https://us02web.zoom.us/j/81234567890?pwd=TokenOnly",
+        },
+    ),
+]
+
+NOT_ZOOM = [
+    "https://zoom.us.evil.example/j/81234567890",
+    "https://notzoom.us/j/81234567890",
+    "https://evilzoom.us/j/81234567890",
+    "https://user:pass@zoom.us/j/81234567890",
+    "http://zoom.us/j/81234567890",
+    "https://zoom.us/j/8123456789012",
 ]
 
 
-def run() -> int:
+def check_expect(name: str, meeting, expect: dict) -> list[str]:
+    url = meeting.join_url()
+    errs = []
+    if "provider" in expect and meeting.provider != expect["provider"]:
+        errs.append(f"provider={meeting.provider!r} want {expect['provider']!r}")
+    if "source" in expect and meeting.source != expect["source"]:
+        errs.append(f"source={meeting.source!r} want {expect['source']!r}")
+    if "meeting_id" in expect and meeting.meeting_id != expect["meeting_id"]:
+        errs.append(f"id={meeting.meeting_id!r} want {expect['meeting_id']!r}")
+    if "passcode" in expect and meeting.passcode != expect["passcode"]:
+        errs.append(f"pass={meeting.passcode!r} want {expect['passcode']!r}")
+    if "url_contains" in expect and (not meeting.url or expect["url_contains"] not in meeting.url):
+        errs.append(f"url missing {expect['url_contains']!r}: {meeting.url!r}")
+    if "join_url" in expect and url != expect["join_url"]:
+        errs.append(f"join_url={url!r} want {expect['join_url']!r}")
+    if not meeting.ok():
+        errs.append("meeting.ok() is False")
+    return errs
+
+
+def test_parse() -> int:
     failed = 0
-    for name, text, expect in CASES:
-        m = mod.parse_invite(text)
-        url = m.join_url()
-        errs = []
-        if "source" in expect and m.source != expect["source"]:
-            errs.append(f"source={m.source!r} want {expect['source']!r}")
-        if "meeting_id" in expect and m.meeting_id != expect["meeting_id"]:
-            errs.append(f"id={m.meeting_id!r} want {expect['meeting_id']!r}")
-        if "passcode" in expect and m.passcode != expect["passcode"]:
-            errs.append(f"pass={m.passcode!r} want {expect['passcode']!r}")
-        if "url_contains" in expect and (not m.url or expect["url_contains"] not in m.url):
-            errs.append(f"url missing {expect['url_contains']!r}: {m.url!r}")
-        if "join_url" in expect and url != expect["join_url"]:
-            errs.append(f"join_url={url!r} want {expect['join_url']!r}")
-        if not m.ok():
-            errs.append("meeting.ok() is False")
+    for name, text, expect in CASES + ZOOM_CASES:
+        errs = check_expect(name, mod.parse_invite(text), expect)
         if errs:
             failed += 1
             print(f"FAIL {name}: {'; '.join(errs)}")
         else:
             print(f"ok   {name}")
+    for name, text, source in REJECTS:
+        meeting = mod.parse_invite(text)
+        errs = []
+        if meeting.provider != "ambiguous" or meeting.ok() or meeting.source != source:
+            errs.append(
+                f"provider={meeting.provider!r} source={meeting.source!r} ok={meeting.ok()}"
+            )
+        if meeting.join_url():
+            errs.append(f"join_url leaked {meeting.join_url()!r}")
+        if errs:
+            failed += 1
+            print(f"FAIL {name}: {'; '.join(errs)}")
+        else:
+            print(f"ok   {name}")
+    for text in NOT_ZOOM:
+        meeting = mod.parse_invite(text)
+        if meeting.provider == "zoom" or meeting.ok():
+            failed += 1
+            print(f"FAIL not-zoom {text!r}: provider={meeting.provider!r}")
+        else:
+            print(f"ok   not-zoom {text.split('/')[2] if '//' in text else text}")
+    help_only = mod.parse_invite("Need help? https://aka.ms/JoinTeamsMeeting?omkt=en-US")
+    if help_only.ok() or help_only.provider not in {"", "ambiguous"}:
+        failed += 1
+        print(f"FAIL aka.ms-only: {help_only}")
+    else:
+        print("ok   aka.ms-only")
+    both = mod.parse_invite(
+        "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22x%22%7d\n"
+        "https://zoom.us/j/81234567890\n"
+    )
+    if both.provider != "ambiguous" or both.ok():
+        failed += 1
+        print(f"FAIL both-providers: {both}")
+    else:
+        print("ok   both-providers")
+    mismatch = mod.parse_invite(
+        "https://zoom.us/j/81234567890\nMeeting ID: 412 829 079 975 3\n"
+    )
+    if mismatch.provider != "ambiguous" or mismatch.source != "ambiguous-mismatch":
+        failed += 1
+        print(f"FAIL zoom-plus-teams-id: {mismatch}")
+    else:
+        print("ok   zoom-plus-teams-id")
+    return failed
+
+
+def test_launch_argv() -> int:
+    failed = 0
+    meeting = mod.parse_invite(REQUIRED)
+    argv = mod.launch_argv(meeting, executable=lambda path: path == "/usr/bin/teams-for-linux", flatpak_ready=lambda _app: False)
+    url = meeting.join_url()
+    if argv != ["/usr/bin/teams-for-linux", "--url", url]:
+        failed += 1
+        print(f"FAIL teams argv: {argv!r}")
+    else:
+        print("ok   teams argv")
+
+    zoom = mod.parse_invite("https://zoom.us/j/81234567890?pwd=TokenOnly")
+    argv = mod.launch_argv(zoom, executable=lambda path: path == "/opt/zoom/ZoomLauncher", flatpak_ready=lambda _app: False)
+    if argv != ["/opt/zoom/ZoomLauncher", "https://zoom.us/j/81234567890?pwd=TokenOnly"]:
+        failed += 1
+        print(f"FAIL zoom argv: {argv!r}")
+    else:
+        print("ok   zoom argv")
+
+    flatpak = mod.launch_argv(
+        zoom,
+        executable=lambda path: path == "/usr/bin/flatpak",
+        flatpak_ready=lambda app: app == mod.ZOOM_FLATPAK,
+    )
+    if flatpak != ["/usr/bin/flatpak", "run", "--", mod.ZOOM_FLATPAK, zoom.join_url()]:
+        failed += 1
+        print(f"FAIL zoom flatpak argv: {flatpak!r}")
+    else:
+        print("ok   zoom flatpak argv")
+
+    ambiguous = mod.parse_invite("Meeting ID: 81234567890")
+    if mod.launch_argv(ambiguous, executable=lambda _path: True, flatpak_ready=lambda _app: True) is not None:
+        failed += 1
+        print("FAIL ambiguous produced a launch command")
+    else:
+        print("ok   ambiguous has no launch")
+
+    called = []
+
+    def recording(path: str) -> bool:
+        called.append(path)
+        return False
+
+    mod.launch_argv(meeting, executable=recording, flatpak_ready=lambda _app: False)
+    if any(path.startswith("/tmp") or not path.startswith("/") for path in called):
+        failed += 1
+        print(f"FAIL launch searched an unexpected path: {called!r}")
+    elif called != list(mod.TEAMS_BINS):
+        failed += 1
+        print(f"FAIL launch candidates: {called!r}")
+    else:
+        print("ok   launch candidates are fixed")
+    return failed
+
+
+def test_status_hides_meeting_material() -> int:
+    failed = 0
+    meeting = mod.parse_invite(REQUIRED)
+    payload = mod.public_status("ok", meeting.provider, meeting.source)
+    blob = json.dumps(payload)
+    for secret in ("4128290799753", "Sd94S45U", "http", "passcode", "join_url"):
+        if secret in blob:
+            failed += 1
+            print(f"FAIL status leaked {secret}: {blob}")
+            return failed
+    ambiguous = mod.public_status("ambiguous", source="ambiguous-length")
+    blob = json.dumps(ambiguous)
+    if "81234567890" in blob or ambiguous.get("error") != "ambiguous":
+        failed += 1
+        print(f"FAIL ambiguous status: {blob}")
+    else:
+        print("ok   status hides meeting material")
+    return failed
+
+
+def test_bounds() -> int:
+    failed = 0
+    code, data, problem = mod.run_bounded(
+        ["/usr/bin/python3", "-I", "-S", "-c", "import sys; sys.stdout.write('x' * 1000)"],
+        timeout=5,
+        max_bytes=100,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+    )
+    if problem != "overflow" or data:
+        failed += 1
+        print(f"FAIL overflow: code={code} problem={problem!r} len={len(data)}")
+    else:
+        print("ok   stdout overflow drops the body")
+
+    code, data, problem = mod.run_bounded(
+        ["/usr/bin/python3", "-I", "-S", "-c", "import sys; sys.stdout.write('ok')"],
+        timeout=5,
+        max_bytes=10,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+    )
+    if problem or code != 0 or data != b"ok":
+        failed += 1
+        print(f"FAIL short read: code={code} problem={problem!r} data={data!r}")
+    else:
+        print("ok   short stdout")
+
+    if mod.root_owned_executable("teams-for-linux") or mod.root_owned_executable("/tmp/teams-for-linux"):
+        failed += 1
+        print("FAIL untrusted path accepted")
+    else:
+        print("ok   relative and /tmp paths rejected")
+    teams = "/usr/bin/teams-for-linux"
+    if os.path.exists(teams) and not mod.root_owned_executable(teams):
+        failed += 1
+        print("FAIL installed teams-for-linux was not accepted")
+    elif os.path.exists(teams):
+        print("ok   installed teams-for-linux is a root-owned executable")
+    zoom = "/usr/bin/zoom"
+    if os.path.exists(zoom) and not mod.root_owned_executable(zoom):
+        failed += 1
+        print("FAIL installed zoom was not accepted")
+    elif os.path.exists(zoom):
+        print("ok   installed zoom is a root-owned executable")
+    return failed
+
+
+def test_manifest() -> int:
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    qml = (ROOT / manifest["entryPoints"]["barWidget"]).read_text(encoding="utf-8")
+    errs = []
+    if manifest["id"] != "io.github.07dcolem.meeting-clipboard":
+        errs.append("id")
+    if manifest["kinds"] != ["bar-widget"]:
+        errs.append("kinds")
+    if f'moduleName: "{manifest["id"]}"' not in qml:
+        errs.append("moduleName")
+    if "textFormat: Text.PlainText" not in qml and "Text {" in qml:
+        errs.append("text format")
+    if "StdioCollector" in qml or "bash" in qml or "sh -c" in qml:
+        errs.append("shell or collector")
+    if errs:
+        print(f"FAIL manifest: {errs}")
+        return 1
+    print("ok   manifest")
+    return 0
+
+
+def test_cli_dry_run() -> int:
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "teams-join-from-clipboard.py"), "--dry-run", "--file", str(ROOT / "fixtures" / "required-invite.txt"), "--no-notify"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0 or "meetup-join" not in result.stdout or "provider:   teams" not in result.stdout:
+        print(f"FAIL dry-run rc={result.returncode} out={result.stdout!r} err={result.stderr!r}")
+        return 1
+    print("ok   required dry-run")
+    return 0
+
+
+def main() -> int:
+    failed = test_parse()
+    failed += test_launch_argv()
+    failed += test_status_hides_meeting_material()
+    failed += test_bounds()
+    failed += test_manifest()
+    failed += test_cli_dry_run()
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(main())

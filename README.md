@@ -1,57 +1,93 @@
-# omarchy-meeting-clipboard
+# Meeting clipboard
 
-Extract a Microsoft Teams meeting ID, passcode, and join URL from clipboard / email / calendar text, then launch [teams-for-linux](https://github.com/IsmaelMartinez/teams-for-linux).
+<p>
+  <a href="https://github.com/07dcolem/omarchy-meeting-clipboard/actions/workflows/test.yml"><img alt="Test status" height="20" src="https://github.com/07dcolem/omarchy-meeting-clipboard/actions/workflows/test.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: MIT" height="20" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="https://github.com/tcballard/omarchy-badges"><img alt="Built for Omarchy: Plugin" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg"></a>
+</p>
 
-Standalone script first. Omarchy plugin wrap is next — see [HANDOFF.md](HANDOFF.md).
+Calendar icon for the [Omarchy](https://omarchy.org/) bar. Left-click reads the clipboard once and opens the meeting in [teams-for-linux](https://github.com/IsmaelMartinez/teams-for-linux), or in Zoom when the clipboard contains a Zoom join link.
 
-## Script
+The icon is the same calendar mark the clock uses, in a horizontal or vertical bar. Right-click and middle-click do nothing. The plugin runs inside `omarchy-shell`, unsandboxed, like every other shell plugin. It does not read the clipboard until that click.
+
+## Install
+
+Omarchy with the Quattro shell. These are already part of a normal Omarchy install: Python 3 at `/usr/bin/python3`, `wl-paste` from `wl-clipboard`, and `notify-send`. `xclip` or `xsel` are used only when `wl-paste` is not installed.
+
+Install the meeting app you want to open. This plugin does not install packages.
+
+| App | Accepted locations |
+|---|---|
+| teams-for-linux | `/usr/bin/teams-for-linux`, `/usr/local/bin/teams-for-linux`, `/opt/teams-for-linux/teams-for-linux`, or Flatpak `com.github.IsmaelMartinez.teams_for_linux` |
+| Zoom | `/usr/bin/zoom`, `/opt/zoom/ZoomLauncher`, or Flatpak `us.zoom.Zoom` |
 
 ```bash
-python3 teams-join-from-clipboard.py              # clipboard
-python3 teams-join-from-clipboard.py --dry-run
-python3 teams-join-from-clipboard.py --file fixtures/required-invite.txt --dry-run
-echo "$INVITE" | python3 teams-join-from-clipboard.py --stdin --json
+omarchy plugin add https://github.com/07dcolem/omarchy-meeting-clipboard.git --enable
 ```
 
-Clipboard backends: `wl-paste`, then `xclip`, then `xsel`.
-
-Launch:
+The icon lands on the right of the bar. Move it with:
 
 ```bash
-teams-for-linux --url '<join-url>'
+omarchy bar move io.github.07dcolem.meeting-clipboard --section right
 ```
 
-Override the client with `TEAMS_FOR_LINUX_CMD`.
+## Remove
 
-## Required invite (must keep working)
-
-```
-Microsoft Teams Need help?<https://aka.ms/JoinTeamsMeeting?omkt=en-US>
-Join the meeting now<https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZGE4ZmY1MGYtMzAxMS00OGE2LThkMWYtYWI1OTUxNGUyMDgy%40thread.v2/0?context=%7b%22Tid%22%3a%2289522aa1-1984-4d7a-96ba-2ac240623b6b%22%2c%22Oid%22%3a%22d79442ba-06b6-42e7-ac83-78e61f2b0fd7%22%7d>
-Meeting ID: 412 829 079 975 3
-Passcode: Sd94S45U
+```bash
+omarchy plugin remove io.github.07dcolem.meeting-clipboard
 ```
 
-## Recorded output
+That unloads the widget. When the checkout was cloned with `omarchy plugin add`, the command deletes `~/.config/omarchy/plugins/io.github.07dcolem.meeting-clipboard`. A copy placed there by hand, with no `.git` directory, is moved to a hidden backup in `~/.config/omarchy/plugins/` instead of being deleted.
 
-`python3 test_parse.py`:
+The plugin writes no state file, cache, credential, systemd unit, or package, so none of those remain. teams-for-linux, Zoom, and Flatpak stay installed, including whatever configuration those applications already keep. The plugin does not edit Hyprland config, `shell.json`, or any other plugin. Omarchy's own enable and remove commands are what place and clear the bar entry.
 
+## Use
+
+Copy a meeting invite, then left-click the icon. A notification names the result. It does not include the meeting id, the passcode, or the link.
+
+| Clipboard | Result |
+|---|---|
+| A join link on `teams.microsoft.com`, `teams.live.com`, or `teams.cloud.microsoft` | Opens that link in teams-for-linux. `https://aka.ms/JoinTeamsMeeting` is ignored. |
+| A labeled meeting id of 12 to 16 digits, or a grouped number of that length | Opens `https://teams.microsoft.com/meet/<id>` in teams-for-linux. A labeled passcode is added as `p=`. |
+| `https://….zoom.us/j/<id>`, `/wc/join/<id>`, `/my/<name>`, or `zoommtg://zoom.us/join?confno=<id>` | Opens that meeting in Zoom. |
+| A labeled meeting id of 9 to 11 digits and no join link | Nothing opens. |
+| A Teams link and a Zoom link, two different meetings, or a Zoom link beside a different 12 to 16 digit id | Nothing opens. |
+
+Zoom publishes meeting ids of 9, 10, or 11 digits. Older Teams ids use that same length, so a bare number there is not enough to choose an app. Twelve digits and longer are Teams. A Zoom invite still joins when it includes a Zoom link, which is the usual invite.
+
+When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A Zoom link keeps the `pwd` value already on that link. The separate human passcode in the invite is not copied into `pwd`.
+
+The notification says one of: Opening Teams, Opening Zoom, copy an invite first, no join link found, the text could be either app, the clipboard is too large, the clipboard could not be read, the app is not installed, or the app did not start.
+
+## What the click runs
+
+The icon starts `/usr/bin/python3 -I -S` on `teams-join-from-clipboard.py --plugin`.
+
+That process reads clipboard text, at most 64 KiB, with a three-second deadline. A larger clipboard is refused and not parsed. It tries `wl-paste` for `text/plain`, then one untyped `wl-paste` read when that returns nothing. Images and other non-text are not parsed. The notification then says the clipboard could not be read. The clipboard text is not passed as a program argument.
+
+The join link is then an argument to the meeting app, which is how teams-for-linux (`--url`) and Zoom (the link itself) accept a meeting. A Teams link can contain a passcode, and a Zoom link can contain `pwd`. That argument is not written to a file and not shown in the notification. The app is a fixed path from the table above, or `flatpak run` of the matching Flatpak id. It is not chosen from `PATH` or from an environment variable.
+
+The plugin makes no network request and writes no file. teams-for-linux then loads the Teams host in the link. Zoom loads the `zoom.us` host in the link. Those requests belong to the meeting app.
+
+If the helper is still running after 12 seconds, the widget stops it. The meeting app, once started, is left running.
+
+## Terminal
+
+The same parser runs without the bar:
+
+```bash
+python3 teams-join-from-clipboard.py --dry-run --file fixtures/required-invite.txt
+python3 test_parse.py
 ```
-ok   required-outlook-angle-brackets
-ok   id-and-pass-only
-ok   short-meet-url-with-p
-ok   meetup-join-bare
-ok   german-labels
-ok   dash-separated-id
-```
 
-`python3 teams-join-from-clipboard.py --dry-run --file fixtures/required-invite.txt`:
+`--dry-run`, `--print-url`, and `--json` print the join link on the terminal. That link can contain a passcode. The bar does not use those flags. It runs `--plugin`, which prints only a short status line with the app name and the reason.
 
-```
-source:     meetup-join-url
-meeting_id: 4128290799753
-passcode:   Sd94S45U
-join_url:   https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZGE4ZmY1MGYtMzAxMS00OGE2LThkMWYtYWI1OTUxNGUyMDgy%40thread.v2/0?context=%7b%22Tid%22%3a%2289522aa1-1984-4d7a-96ba-2ac240623b6b%22%2c%22Oid%22%3a%22d79442ba-06b6-42e7-ac83-78e61f2b0fd7%22%7d
-```
+`fixtures/required-invite.txt` is the Outlook-shaped invite the tests have to keep opening through its `meetup-join` link.
 
-Same files under `output/`.
+## Compatibility
+
+Parser tests were run with Python 3.14 on this machine, and the GitHub workflow runs them on Python 3.12. `omarchy plugin validate` passed on Omarchy 4.0.4, and the widget was enabled on that system. A click in the live bar was not part of the automated checks.
+
+## License
+
+[MIT](LICENSE). Copyright 2026 Dylan Coleman.

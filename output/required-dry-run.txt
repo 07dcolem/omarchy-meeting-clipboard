@@ -1,3 +1,4 @@
+provider:   teams
 source:     meetup-join-url
 meeting_id: 4128290799753
 passcode:   Sd94S45U

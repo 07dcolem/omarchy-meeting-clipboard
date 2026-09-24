@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.07dcolem.meeting-clipboard",
+  "name": "Meeting clipboard",
+  "version": "0.1.0",
+  "author": "Dylan Coleman",
+  "license": "MIT",
+  "homepage": "https://github.com/07dcolem/omarchy-meeting-clipboard",
+  "description": "Calendar icon that joins the Teams or Zoom meeting on the clipboard.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Meeting clipboard",
+    "description": "Calendar icon. Left click reads the clipboard and opens the Teams or Zoom meeting in it.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

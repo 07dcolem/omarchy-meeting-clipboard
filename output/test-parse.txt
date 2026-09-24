@@ -4,3 +4,34 @@ ok   short-meet-url-with-p
 ok   meetup-join-bare
 ok   german-labels
 ok   dash-separated-id
+ok   teams-host-wins-on-short-id
+ok   zoom-join-link
+ok   zoom-without-pwd-keeps-human-passcode-off-the-url
+ok   zoom-personal
+ok   zoom-scheme
+ok   web-client-path
+ok   zoom-overlap-length
+ok   zoom-phrase-without-link
+ok   legacy-nine-digits
+ok   not-zoom zoom.us.evil.example
+ok   not-zoom notzoom.us
+ok   not-zoom evilzoom.us
+ok   not-zoom user:pass@zoom.us
+ok   not-zoom zoom.us
+ok   not-zoom zoom.us
+ok   aka.ms-only
+ok   both-providers
+ok   zoom-plus-teams-id
+ok   teams argv
+ok   zoom argv
+ok   zoom flatpak argv
+ok   ambiguous has no launch
+ok   launch candidates are fixed
+ok   status hides meeting material
+ok   stdout overflow drops the body
+ok   short stdout
+ok   relative and /tmp paths rejected
+ok   installed teams-for-linux is a root-owned executable
+ok   installed zoom is a root-owned executable
+ok   manifest
+ok   required dry-run
