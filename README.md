@@ -49,7 +49,7 @@ omarchy plugin remove io.github.07dcolem.meeting-clipboard
 
 That unloads the widget. When the checkout was cloned with `omarchy plugin add`, the command deletes `~/.config/omarchy/plugins/io.github.07dcolem.meeting-clipboard`. A copy placed there by hand, with no `.git` directory, is moved to a hidden backup in `~/.config/omarchy/plugins/` instead of being deleted.
 
-The plugin writes no state file, cache, credential, or package, and it adds no background service, so none of those remain. teams-for-linux, Zoom, and Flatpak stay installed, including whatever configuration those applications already keep. The plugin does not edit Hyprland config, `shell.json`, or any other plugin. Omarchy's own enable and remove commands are what place and clear the bar entry.
+The plugin writes no state file, cache, credential, or package, and it installs no service. A click that copied a passcode can leave one process running until that 30 second clear finishes. That process does not stay after it exits. teams-for-linux, Zoom, and Flatpak stay installed, including whatever configuration those applications already keep. The plugin does not edit Hyprland config, `shell.json`, or any other plugin. Omarchy's own enable and remove commands are what place and clear the bar entry.
 
 ## Use
 
@@ -58,7 +58,7 @@ Copy a meeting invite, then left-click the icon. A notification names the result
 | Clipboard | Result |
 |---|---|
 | A join link on `teams.microsoft.com`, `teams.live.com`, or `teams.cloud.microsoft` | Opens that link in teams-for-linux. `https://aka.ms/JoinTeamsMeeting` is ignored. |
-| A labeled meeting id of 12 to 16 digits, or a grouped number of that length | Opens `https://teams.microsoft.com/meet/<id>` in teams-for-linux. A labeled passcode is not added to that link. |
+| A labeled meeting id of 12 to 16 digits, or a grouped number of that length | Opens `https://teams.microsoft.com/meet/<id>` in teams-for-linux. A labeled passcode is placed on the clipboard, not on that link. |
 | `https://….zoom.us/j/<id>`, `/wc/join/<id>`, `/my/<name>`, or `zoommtg://zoom.us/join?confno=<id>` | Opens that meeting in Zoom. |
 | A labeled meeting id of 9 to 11 digits and no join link | Nothing opens. |
 | A Teams link and a Zoom link, two different meetings, or a Zoom link beside a different 12 to 16 digit id | Nothing opens. |
@@ -68,10 +68,14 @@ Zoom publishes meeting ids of 9, 10, or 11 digits. Older Teams ids use that same
 
 Deleting an entry in the clipboard panel takes it off that list immediately. The previous copy can still be pasted by other programs until something else is copied. The click follows the panel: a deleted invite does not open Teams or Zoom.
 
-When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A passcode carried as Teams `p` or Zoom `pwd` is removed before the meeting app starts. The human passcode printed in a Zoom invite is not copied onto the link. The meeting app asks for the passcode when the meeting requires one. Other Teams parameters, including `context`, stay on the link.
+When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A passcode carried as Teams `p`, or written in the invite, is removed from the link and placed on the clipboard. Zoom's `pwd` token is removed from the link and is not placed on the clipboard. The passcode written in a Zoom invite is what gets copied, because that is the value Zoom asks you to type. Other Teams parameters, including `context`, stay on the link.
+
+The copied passcode is marked sensitive. Omarchy's clipboard panel skips that mark, so this copy is not added to clipboard history. The invite you copied yourself can still be there. The notification says the passcode is on the clipboard for 30 seconds. When that time is up, the clipboard is cleared only if it still holds that passcode. A copy you make in the meantime is left alone. If the passcode cannot be copied, the meeting still opens and the notification asks you to enter the passcode yourself.
 
 The notification text is one of:
 
+- Opening Teams. A passcode is on the clipboard. Paste it within 30 seconds.
+- Opening Zoom. A passcode is on the clipboard. Paste it within 30 seconds.
 - Opening Teams. Enter the passcode there if it asks.
 - Opening Zoom. Enter the passcode there if it asks.
 - Copy a Teams or Zoom invite, then click the calendar icon.
@@ -93,9 +97,11 @@ That process reads clipboard text, at most 64 KiB, with a three-second deadline.
 
 The join link is then an argument to the meeting app, which is how teams-for-linux (`--url`) and Zoom (the link itself) accept a meeting. Teams `p` and Zoom `pwd` are removed before that command is started, so the passcode is not on the client's command line while the meeting stays open. That argument is not written to a file and not shown in the notification. The app is a fixed path from the table above, or `flatpak run` of the matching Flatpak id. It is not chosen from `PATH` or from an environment variable.
 
+When the invite has a passcode this plugin can copy, that value is piped into `/usr/bin/wl-copy --sensitive`. It is not a program argument. `wl-clipboard` 2.3.0 or newer is required for `--sensitive`. The copy offers the password-manager hint `x-kde-passwordManagerHint`. Omarchy's clipboard panel skips a copy that carries that hint. A separate process then waits 30 seconds, reads the clipboard once, and runs `wl-copy --clear` only when the bytes still match. The widget's 12 second limit stops the join helper. It does not stop that wait. The notification does not contain the passcode.
+
 The plugin makes no network request and writes no file. teams-for-linux then loads the Teams host in the link. Zoom loads the `zoom.us` host in the link. Those requests belong to the meeting app.
 
-If the helper is still running after 12 seconds, the widget stops it and notifies: The join helper did not finish. The meeting app, once started, is left running.
+If the helper is still running after 12 seconds, the widget stops it and notifies: The join helper did not finish. The meeting app, once started, is left running. The clipboard clear, if one was started, still runs to the end of its 30 seconds.
 
 ## Terminal
 

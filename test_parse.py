@@ -385,6 +385,87 @@ def test_launch_argv() -> int:
     return failed
 
 
+def test_clipboard_offer() -> int:
+    failed = 0
+    zoom = mod.parse_invite("https://zoom.us/j/81234567890?pwd=TokenOnly\nPasscode: 123456\n")
+    secret = mod.clipboard_secret(zoom)
+    if secret != b"123456":
+        failed += 1
+        print(f"FAIL zoom clipboard secret: {secret!r}")
+    else:
+        print("ok   zoom clipboard secret is the typed passcode")
+
+    teams = mod.parse_invite("https://teams.microsoft.com/meet/31827829071516?p=AbCdEf12")
+    secret = mod.clipboard_secret(teams)
+    argv = mod.launch_argv(
+        teams,
+        executable=lambda path: path == "/usr/bin/teams-for-linux",
+        flatpak_ready=lambda _app: False,
+    )
+    blob = "\n".join(argv or [])
+    if secret != b"AbCdEf12" or "AbCdEf12" in blob or (argv and mod.command_exposes_passcode(argv)):
+        failed += 1
+        print(f"FAIL teams clipboard vs launch: secret={secret!r} argv={argv!r}")
+    else:
+        print("ok   teams passcode is copied from the invite and kept off the launch")
+
+    if mod.clipboard_secret(mod.parse_invite("https://company.zoom.us/my/alex.smith")) is not None:
+        failed += 1
+        print("FAIL personal zoom produced a clipboard secret")
+    else:
+        print("ok   zoom without a written passcode copies nothing")
+
+    dirty = mod.Meeting(passcode="bad\ncode", provider="teams", meeting_id="4128290799753")
+    long = mod.Meeting(passcode="a" * (mod.PASSCODE_COPY_MAX + 1), provider="teams")
+    if mod.clipboard_secret(dirty) is not None or mod.clipboard_secret(long) is not None:
+        failed += 1
+        print("FAIL unsafe passcode was accepted for the clipboard")
+    else:
+        print("ok   control characters and overlong passcodes are not copied")
+
+    copy_argv = mod.passcode_copy_argv()
+    clear_argv = ["/usr/bin/python3", "-I", "-S", "-c", mod.CLEAR_SCRIPT, str(mod.CLIP_HOLD_SECONDS)]
+    exposed = "\n".join(copy_argv + clear_argv)
+    if (
+        copy_argv != ["/usr/bin/wl-copy", "--sensitive", "--trim-newline"]
+        or "123456" in exposed
+        or "AbCdEf12" in exposed
+        or "TokenOnly" in exposed
+        or "--sensitive" not in copy_argv
+    ):
+        failed += 1
+        print(f"FAIL clipboard commands: {copy_argv!r}")
+    else:
+        print("ok   clipboard commands do not carry the passcode")
+
+    if not mod.same_secret(b"123456", b"123456") or mod.same_secret(b"123456 ", b"123456") or mod.same_secret(b"", b"123456"):
+        failed += 1
+        print("FAIL clear comparison")
+    else:
+        print("ok   clear runs only when the clipboard still matches")
+
+    for provider in ("teams", "zoom"):
+        _title, body = mod.NOTICES[("copied", provider)]
+        if "123456" in body or "AbCdEf12" in body or "30 seconds" not in body or "clipboard" not in body:
+            failed += 1
+            print(f"FAIL copied notice {provider}: {body!r}")
+            return failed
+    try:
+        compile(mod.CLEAR_SCRIPT, "<clear-passcode>", "exec")
+    except SyntaxError as exc:
+        failed += 1
+        print(f"FAIL clear script: {exc}")
+        return failed
+    status = mod.public_status("ok", "teams", "short-meet-url", copied=True)
+    blob = json.dumps(status)
+    if "AbCdEf12" in blob or "passcode" in blob or status.get("copied") is not True:
+        failed += 1
+        print(f"FAIL copied status: {blob}")
+    else:
+        print("ok   copied notice and status omit the passcode")
+    return failed
+
+
 def test_status_hides_meeting_material() -> int:
     failed = 0
     meeting = mod.parse_invite(REQUIRED)
@@ -535,6 +616,7 @@ def test_cli_dry_run() -> int:
 def main() -> int:
     failed = test_parse()
     failed += test_launch_argv()
+    failed += test_clipboard_offer()
     failed += test_status_hides_meeting_material()
     failed += test_bounds()
     failed += test_manifest()

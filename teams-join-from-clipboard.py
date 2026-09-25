@@ -39,6 +39,10 @@ STDERR_MAX = 4096
 CLIP_TIMEOUT = 3.0
 NOTIFY_TIMEOUT = 2.0
 FLATPAK_TIMEOUT = 5.0
+# Bytes, not characters. A longer value is not placed on the clipboard.
+PASSCODE_COPY_MAX = 128
+# How long the copied passcode stays available to paste.
+CLIP_HOLD_SECONDS = 30
 # Omarchy's clipboard panel writes this file. Deleting an entry updates the
 # file and leaves the Wayland selection alone, so wl-paste can still return
 # an invite the panel no longer lists.
@@ -66,7 +70,10 @@ SYSTEM_BINS = frozenset(
     + ZOOM_BINS
     + (
         FLATPAK_BIN,
+        "/usr/bin/python3",
         "/usr/bin/wl-paste",
+        "/usr/bin/wl-copy",
+        "/usr/bin/timeout",
         "/usr/bin/xclip",
         "/usr/bin/xsel",
         "/usr/bin/notify-send",
@@ -142,6 +149,16 @@ NOTICES = {
     ("ok", "zoom"): (
         "Joining meeting",
         "Opening Zoom. Enter the passcode there if it asks.",
+    ),
+    ("copied", "teams"): (
+        "Joining meeting",
+        "Opening Teams. A passcode is on the clipboard. "
+        f"Paste it within {CLIP_HOLD_SECONDS} seconds.",
+    ),
+    ("copied", "zoom"): (
+        "Joining meeting",
+        "Opening Zoom. A passcode is on the clipboard. "
+        f"Paste it within {CLIP_HOLD_SECONDS} seconds.",
     ),
     ("empty", ""): (
         "Meeting clipboard",
@@ -898,6 +915,198 @@ def launch_argv(
     return argv
 
 
+def clipboard_secret(meeting: Meeting) -> Optional[bytes]:
+    """Passcode to offer for pasting, or None.
+
+    This is the passcode written in the invite, including a Teams ``p`` value.
+    Zoom's ``pwd`` token is a different value and is not returned here.
+    """
+    value = meeting.passcode or ""
+    if not value or not _no_controls(value):
+        return None
+    try:
+        raw = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    if not raw or len(raw) > PASSCODE_COPY_MAX:
+        return None
+    return raw
+
+
+def same_secret(current: Optional[bytes], secret: bytes) -> bool:
+    """True when the clipboard still holds exactly the bytes this plugin wrote."""
+    return bool(secret) and current == secret
+
+
+def passcode_copy_argv() -> list[str]:
+    return ["/usr/bin/wl-copy", "--sensitive", "--trim-newline"]
+
+
+# Runs outside the plugin directory. The secret arrives on stdin, never in argv.
+# ``--sensitive`` offers the password-manager hint, which Omarchy's clipboard
+# panel skips. The clear runs only when a fresh read still matches.
+CLEAR_SCRIPT = r"""
+import subprocess
+import sys
+import time
+
+MAX = 128
+WL_PASTE = "/usr/bin/wl-paste"
+WL_COPY = "/usr/bin/wl-copy"
+TIMEOUT = "/usr/bin/timeout"
+
+
+def bounded(argv, cap):
+    try:
+        proc = subprocess.Popen(
+            [TIMEOUT, "-k", "1", "3", *argv],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    buf = b""
+    try:
+        assert proc.stdout is not None
+        while len(buf) <= cap:
+            chunk = proc.stdout.read(cap + 1 - len(buf))
+            if not chunk:
+                break
+            buf += chunk
+        if len(buf) > cap:
+            proc.kill()
+            proc.wait(timeout=2)
+            return None
+        proc.wait(timeout=4)
+    except Exception:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return None
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
+    return buf
+
+
+secret = sys.stdin.buffer.read(MAX + 1)
+if not secret or len(secret) > MAX or any(item in secret for item in b"\r\n\x00"):
+    raise SystemExit(0)
+wait = 30
+if len(sys.argv) > 1 and sys.argv[1].isdigit() and 1 <= int(sys.argv[1]) <= 120:
+    wait = int(sys.argv[1])
+time.sleep(wait)
+current = bounded([WL_PASTE, "--no-newline", "--type", "text/plain"], MAX)
+if current == secret:
+    try:
+        subprocess.run(
+            [TIMEOUT, "-k", "1", "3", WL_COPY, "--clear"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+"""
+
+
+def _tools_ready() -> bool:
+    return all(
+        root_owned_executable(path)
+        for path in ("/usr/bin/wl-copy", "/usr/bin/wl-paste", "/usr/bin/timeout", "/usr/bin/python3")
+    )
+
+
+def _clear_now() -> None:
+    if not root_owned_executable("/usr/bin/wl-copy") or not root_owned_executable("/usr/bin/timeout"):
+        return
+    run_bounded(
+        ["/usr/bin/timeout", "-k", "1", "3", "/usr/bin/wl-copy", "--clear"],
+        CLIP_TIMEOUT,
+        64,
+        _gui_env(),
+    )
+
+
+def copy_passcode(secret: bytes) -> bool:
+    """Place secret on the clipboard. The process arguments do not contain it."""
+    if not secret or len(secret) > PASSCODE_COPY_MAX or not root_owned_executable("/usr/bin/wl-copy"):
+        return False
+    try:
+        proc = subprocess.Popen(
+            passcode_copy_argv(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=_gui_env(),
+        )
+    except OSError:
+        return False
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(secret)
+        proc.stdin.close()
+        code = proc.wait(timeout=CLIP_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return False
+    return code == 0
+
+
+def arm_clear(secret: bytes) -> bool:
+    """Wait, then clear the clipboard if it still holds secret.
+
+    The waiter is its own session and is not stopped when the join helper exits.
+    """
+    if not _tools_ready():
+        return False
+    try:
+        proc = subprocess.Popen(
+            ["/usr/bin/python3", "-I", "-S", "-c", CLEAR_SCRIPT, str(CLIP_HOLD_SECONDS)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=_gui_env(),
+        )
+    except OSError:
+        return False
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(secret)
+        proc.stdin.close()
+        # A syntax or startup failure exits at once. The wait itself stays up.
+        code = proc.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        return True
+    except OSError:
+        code = 1
+    if code != 0:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    return False
+
+
+def offer_passcode(secret: bytes) -> bool:
+    """Copy secret for pasting. Clear immediately if the timed clear cannot be armed."""
+    if not copy_passcode(secret):
+        return False
+    if not arm_clear(secret):
+        _clear_now()
+        return False
+    return True
+
+
 def spawn_detached(argv: list[str]) -> bool:
     try:
         subprocess.Popen(
@@ -925,12 +1134,19 @@ def notify(kind: str, provider: str = "") -> None:
     )
 
 
-def public_status(kind: str, provider: str = "", source: str = "") -> dict[str, str | bool]:
+def public_status(
+    kind: str,
+    provider: str = "",
+    source: str = "",
+    copied: bool = False,
+) -> dict[str, str | bool]:
     """Status for the bar. Meeting ids, passcodes, and URLs stay out of it."""
     if kind == "ok":
         payload: dict[str, str | bool] = {"ok": True, "provider": provider}
         if source:
             payload["source"] = source
+        if copied:
+            payload["copied"] = True
         return payload
     payload = {"ok": False, "error": kind}
     if provider in {"teams", "zoom"}:
@@ -995,8 +1211,10 @@ def _plugin_main() -> int:
         emit_status(public_status("launch-failed", meeting.provider))
         notify("launch-failed")
         return 2
-    emit_status(public_status("ok", meeting.provider, meeting.source))
-    notify("ok", meeting.provider)
+    secret = clipboard_secret(meeting)
+    copied = secret is not None and offer_passcode(secret)
+    emit_status(public_status("ok", meeting.provider, meeting.source, copied=copied))
+    notify("copied" if copied else "ok", meeting.provider)
     return 0
 
 
@@ -1119,8 +1337,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.no_notify:
             notify("launch-failed")
         return 2
+    secret = clipboard_secret(meeting)
+    copied = secret is not None and offer_passcode(secret)
     if not args.no_notify:
-        notify("ok", meeting.provider)
+        notify("copied" if copied else "ok", meeting.provider)
     if not args.json and not args.print_url:
         print(f"launching: {meeting.provider}")
     return 0
