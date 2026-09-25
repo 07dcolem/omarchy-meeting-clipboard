@@ -131,13 +131,18 @@ PASS_LABEL = re.compile(
     re.IGNORECASE,
 )
 P_PARAM = re.compile(r"[?&]p=([^&#\s<>\"']+)", re.IGNORECASE)
-ZOOM_PWD = re.compile(r"[A-Za-z0-9._~-]{1,256}")
 ZOOM_PERSONAL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,39})")
 HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 NOTICES = {
-    ("ok", "teams"): ("Joining meeting", "Opening Teams."),
-    ("ok", "zoom"): ("Joining meeting", "Opening Zoom."),
+    ("ok", "teams"): (
+        "Joining meeting",
+        "Opening Teams. Enter the passcode there if it asks.",
+    ),
+    ("ok", "zoom"): (
+        "Joining meeting",
+        "Opening Zoom. Enter the passcode there if it asks.",
+    ),
     ("empty", ""): (
         "Meeting clipboard",
         "Copy a Teams or Zoom invite, then click the calendar icon.",
@@ -190,25 +195,19 @@ class Meeting:
     provider: str = ""
 
     def join_url(self) -> Optional[str]:
-        """Best URL to hand the desktop client. None when the text is ambiguous."""
+        """URL for the desktop client, with the passcode parameter removed."""
         if self.provider == "zoom":
-            return self.url
+            if not self.url:
+                return None
+            safe = strip_secret_query(self.url)
+            return safe if _as_zoom(safe) == safe else None
         if self.provider != "teams":
             return None
         if self.url:
-            if (
-                self.passcode
-                and "/meet/" in self.url.lower()
-                and "p=" not in self.url.lower()
-            ):
-                sep = "&" if "?" in self.url else "?"
-                built = f"{self.url}{sep}p={urllib.parse.quote(self.passcode, safe='')}"
-                return built if _teams_url_ok(built) else None
-            return self.url if _teams_url_ok(self.url) else None
+            safe = strip_secret_query(self.url)
+            return safe if _teams_url_ok(safe) else None
         if self.meeting_id and _teams_digits(self.meeting_id):
             base = f"https://teams.microsoft.com/meet/{self.meeting_id}"
-            if self.passcode:
-                base = f"{base}?p={urllib.parse.quote(self.passcode, safe='')}"
             return base if _teams_url_ok(base) else None
         return None
 
@@ -258,6 +257,59 @@ def _no_controls(value: str) -> bool:
     return not any(character in value for character in ("\r", "\n", "\x00", " ", "\t"))
 
 
+# Teams calls the passcode p. Zoom calls its join token pwd. Either value on
+# the client command line stays readable for the whole meeting.
+_PASSCODE_QUERY_KEYS = frozenset({"p", "pwd"})
+_PASSCODE_ARG = re.compile(
+    r"(?:^|[?&#]|%3f|%26|%23)(?:p|pwd)(?:=|%3d)",
+    re.IGNORECASE,
+)
+
+
+def _query_key(name: str) -> str:
+    """Decode a query name twice, so ``%70`` and ``%2570`` both resolve to ``p``."""
+    current = name
+    for _ in range(2):
+        decoded = urllib.parse.unquote_plus(current)
+        if decoded == current:
+            break
+        current = decoded
+    return current.lower()
+
+
+def strip_secret_query(url: str) -> str:
+    """Return url without Teams ``p`` or Zoom ``pwd`` parameters.
+
+    Other parameters, including a Teams ``context`` value, stay as they were.
+    """
+    parts = urllib.parse.urlsplit(url)
+    if not parts.query:
+        return url
+    kept: list[str] = []
+    removed = False
+    for piece in parts.query.split("&"):
+        if piece and _query_key(piece.split("=", 1)[0]) in _PASSCODE_QUERY_KEYS:
+            removed = True
+            continue
+        kept.append(piece)
+    if not removed:
+        return url
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, "&".join(kept), parts.fragment)
+    )
+
+
+def command_exposes_passcode(argv: list[str]) -> bool:
+    if any(_PASSCODE_ARG.search(item) for item in argv):
+        return True
+    for item in argv:
+        query = urllib.parse.urlsplit(item).query
+        for piece in query.split("&"):
+            if piece and _query_key(piece.split("=", 1)[0]) in _PASSCODE_QUERY_KEYS:
+                return True
+    return False
+
+
 def _https_parts(url: str) -> Optional[urllib.parse.SplitResult]:
     if not url or len(url) > URL_MAX or not _no_controls(url):
         return None
@@ -281,30 +333,18 @@ def _zoom_host(host: str) -> bool:
     return all(HOST_LABEL.fullmatch(label) for label in labels)
 
 
-def _zoom_pwd(value: str) -> bool:
-    return bool(value) and bool(ZOOM_PWD.fullmatch(value))
+def _rebuild_zoom(host: str, path: str) -> Optional[str]:
+    """Zoom join URL with no pwd parameter.
 
-
-def _rebuild_zoom(host: str, path: str, pwd: str) -> Optional[str]:
+    Zoom keeps its command line for the whole meeting, so the join token
+    cannot travel as an argument. Zoom asks for the passcode itself.
+    """
     if not _zoom_host(host):
         return None
     url = f"https://{host}{path}"
-    if pwd:
-        if not _zoom_pwd(pwd):
-            pwd = ""
-        else:
-            url += "?pwd=" + urllib.parse.quote(pwd, safe="")
     if len(url) > URL_MAX or not _no_controls(url):
         return None
     return url
-
-
-def _query_pwd(query: str) -> str:
-    parsed = urllib.parse.parse_qs(query, keep_blank_values=False)
-    values = parsed.get("pwd", [])
-    if len(values) != 1:
-        return ""
-    return values[0] if _zoom_pwd(values[0]) else ""
 
 
 def _as_zoom(raw: str) -> Optional[str]:
@@ -315,11 +355,10 @@ def _as_zoom(raw: str) -> Optional[str]:
     path = parts.path or ""
     join = re.fullmatch(r"/(?:j|wc/join)/(\d{9,11})/?", path)
     if join:
-        return _rebuild_zoom(parts.hostname or "", f"/j/{join.group(1)}", _query_pwd(parts.query))
+        return _rebuild_zoom(parts.hostname or "", f"/j/{join.group(1)}")
     personal = re.fullmatch(r"/my/([A-Za-z0-9](?:[A-Za-z0-9._-]{0,39}))/?", path)
     if personal and ZOOM_PERSONAL.fullmatch(personal.group(1)):
-        # Personal links have no numeric id and no passcode parameter.
-        return _rebuild_zoom(parts.hostname or "", f"/my/{personal.group(1)}", "")
+        return _rebuild_zoom(parts.hostname or "", f"/my/{personal.group(1)}")
     return None
 
 
@@ -337,9 +376,7 @@ def _as_zoom_scheme(raw: str) -> Optional[str]:
     confno = parsed.get("confno", [])
     if len(confno) != 1 or not re.fullmatch(r"\d{9,11}", confno[0]):
         return None
-    pwd = parsed.get("pwd", [""])
-    secret = pwd[0] if len(pwd) == 1 and _zoom_pwd(pwd[0]) else ""
-    return _rebuild_zoom("zoom.us", f"/j/{confno[0]}", secret)
+    return _rebuild_zoom("zoom.us", f"/j/{confno[0]}")
 
 
 def _teams_url_ok(url: str) -> bool:
@@ -474,7 +511,7 @@ def parse_invite(text: str) -> Meeting:
         param = P_PARAM.search(chosen)
         url_pass = urllib.parse.unquote(param.group(1)) if param else None
         return Meeting(
-            url=chosen,
+            url=strip_secret_query(chosen),
             meeting_id=labeled or url_id or long_id,
             passcode=passcode or url_pass,
             source="meetup-join-url" if meetup else "short-meet-url",
@@ -834,26 +871,31 @@ def launch_argv(
     url = meeting.join_url()
     if not meeting.ok() or not url or not _no_controls(url):
         return None
+    # join_url() already drops p and pwd. Refuse here too, so a later edit
+    # cannot hand the passcode to the long-lived client by accident.
+    if command_exposes_passcode([url]):
+        return None
     ready = flatpak_installed if flatpak_ready is None else flatpak_ready
+    argv: Optional[list[str]] = None
     if meeting.provider == "teams":
         if not _teams_url_ok(url):
             return None
         binary = _first_binary(TEAMS_BINS, executable)
         if binary:
-            return [binary, "--url", url]
-        if ready(TEAMS_FLATPAK):
-            return [FLATPAK_BIN, "run", "--", TEAMS_FLATPAK, "--url", url]
-        return None
-    if meeting.provider == "zoom":
+            argv = [binary, "--url", url]
+        elif ready(TEAMS_FLATPAK):
+            argv = [FLATPAK_BIN, "run", "--", TEAMS_FLATPAK, "--url", url]
+    elif meeting.provider == "zoom":
         if _as_zoom(url) != url:
             return None
         binary = _first_binary(ZOOM_BINS, executable)
         if binary:
-            return [binary, url]
-        if ready(ZOOM_FLATPAK):
-            return [FLATPAK_BIN, "run", "--", ZOOM_FLATPAK, url]
+            argv = [binary, url]
+        elif ready(ZOOM_FLATPAK):
+            argv = [FLATPAK_BIN, "run", "--", ZOOM_FLATPAK, url]
+    if argv is None or command_exposes_passcode(argv):
         return None
-    return None
+    return argv
 
 
 def spawn_detached(argv: list[str]) -> bool:
@@ -1066,7 +1108,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             notify("no-client", meeting.provider)
         return 2
     extra = [arg for arg in args.client_arg if arg and not arg.startswith("-") and _no_controls(arg)]
-    if not spawn_detached(client + extra):
+    command = client + extra
+    if command_exposes_passcode(command):
+        print("refusing to put a meeting passcode on the client command line", file=sys.stderr)
+        if not args.no_notify:
+            notify("launch-failed")
+        return 2
+    if not spawn_detached(command):
         print("failed to launch the meeting client", file=sys.stderr)
         if not args.no_notify:
             notify("launch-failed")

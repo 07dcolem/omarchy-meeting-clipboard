@@ -37,7 +37,17 @@ CASES = [
             "source": "labeled-id",
             "meeting_id": "4128290799753",
             "passcode": "Sd94S45U",
-            "join_url": "https://teams.microsoft.com/meet/4128290799753?p=Sd94S45U",
+            "join_url": "https://teams.microsoft.com/meet/4128290799753",
+        },
+    ),
+    (
+        "meetup-keeps-context-and-drops-passcode-parameter",
+        "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22x%22%7d&p=AbCdEf12",
+        {
+            "provider": "teams",
+            "source": "meetup-join-url",
+            "passcode": "AbCdEf12",
+            "join_url": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22x%22%7d",
         },
     ),
     (
@@ -115,7 +125,7 @@ ZOOM_CASES = [
             "provider": "zoom",
             "source": "zoom-url",
             "meeting_id": "81234567890",
-            "join_url": "https://us02web.zoom.us/j/81234567890?pwd=TokenOnly",
+            "join_url": "https://us02web.zoom.us/j/81234567890",
         },
     ),
     (
@@ -140,7 +150,7 @@ ZOOM_CASES = [
         "zoommtg://zoom.us/join?confno=81234567890&pwd=TokenOnly",
         {
             "provider": "zoom",
-            "join_url": "https://zoom.us/j/81234567890?pwd=TokenOnly",
+            "join_url": "https://zoom.us/j/81234567890",
         },
     ),
     (
@@ -148,7 +158,7 @@ ZOOM_CASES = [
         "https://us02web.zoom.us/wc/join/81234567890?pwd=TokenOnly",
         {
             "provider": "zoom",
-            "join_url": "https://us02web.zoom.us/j/81234567890?pwd=TokenOnly",
+            "join_url": "https://us02web.zoom.us/j/81234567890",
         },
     ),
 ]
@@ -239,35 +249,90 @@ def test_parse() -> int:
     return failed
 
 
+def _argv_text(argv) -> str:
+    return "\n".join(argv or [])
+
+
+def _passcode_leaked(argv, secrets: tuple[str, ...]) -> str:
+    blob = _argv_text(argv)
+    if argv and mod.command_exposes_passcode(argv):
+        return f"passcode query in argv: {argv!r}"
+    for secret in secrets:
+        if secret and secret in blob:
+            return f"{secret!r} in argv: {argv!r}"
+    return ""
+
+
 def test_launch_argv() -> int:
     failed = 0
+    teams_bin = lambda path: path == "/usr/bin/teams-for-linux"
+    no_flatpak = lambda _app: False
     meeting = mod.parse_invite(REQUIRED)
-    argv = mod.launch_argv(meeting, executable=lambda path: path == "/usr/bin/teams-for-linux", flatpak_ready=lambda _app: False)
+    argv = mod.launch_argv(meeting, executable=teams_bin, flatpak_ready=no_flatpak)
     url = meeting.join_url()
-    if argv != ["/usr/bin/teams-for-linux", "--url", url]:
+    leaked = _passcode_leaked(argv, ("Sd94S45U",))
+    if argv != ["/usr/bin/teams-for-linux", "--url", url] or leaked:
         failed += 1
-        print(f"FAIL teams argv: {argv!r}")
+        print(f"FAIL teams argv: {argv!r} {leaked}")
     else:
         print("ok   teams argv")
 
-    zoom = mod.parse_invite("https://zoom.us/j/81234567890?pwd=TokenOnly")
-    argv = mod.launch_argv(zoom, executable=lambda path: path == "/opt/zoom/ZoomLauncher", flatpak_ready=lambda _app: False)
-    if argv != ["/opt/zoom/ZoomLauncher", "https://zoom.us/j/81234567890?pwd=TokenOnly"]:
+    labeled = mod.parse_invite("Meeting ID: 412 829 079 975 3\nPasscode: Sd94S45U\n")
+    argv = mod.launch_argv(labeled, executable=teams_bin, flatpak_ready=no_flatpak)
+    leaked = _passcode_leaked(argv, ("Sd94S45U",))
+    if argv != ["/usr/bin/teams-for-linux", "--url", "https://teams.microsoft.com/meet/4128290799753"] or leaked:
         failed += 1
-        print(f"FAIL zoom argv: {argv!r}")
+        print(f"FAIL labeled teams argv: {argv!r} {leaked}")
     else:
-        print("ok   zoom argv")
+        print("ok   labeled teams argv omits passcode")
+
+    short = mod.parse_invite("https://teams.microsoft.com/meet/31827829071516?p=AbCdEf12")
+    argv = mod.launch_argv(short, executable=teams_bin, flatpak_ready=no_flatpak)
+    leaked = _passcode_leaked(argv, ("AbCdEf12",))
+    if argv != ["/usr/bin/teams-for-linux", "--url", "https://teams.microsoft.com/meet/31827829071516"] or leaked:
+        failed += 1
+        print(f"FAIL short teams argv: {argv!r} {leaked}")
+    else:
+        print("ok   short teams argv omits p")
+
+    encoded = mod.parse_invite("https://teams.microsoft.com/meet/31827829071516?%70=AbCdEf12")
+    argv = mod.launch_argv(encoded, executable=teams_bin, flatpak_ready=no_flatpak)
+    leaked = _passcode_leaked(argv, ("AbCdEf12",))
+    if leaked or not argv or "31827829071516" not in argv[-1]:
+        failed += 1
+        print(f"FAIL encoded p argv: {argv!r} {leaked}")
+    else:
+        print("ok   encoded p is not launched")
+
+    zoom = mod.parse_invite("https://zoom.us/j/81234567890?pwd=TokenOnly")
+    argv = mod.launch_argv(zoom, executable=lambda path: path == "/opt/zoom/ZoomLauncher", flatpak_ready=no_flatpak)
+    leaked = _passcode_leaked(argv, ("TokenOnly",))
+    if argv != ["/opt/zoom/ZoomLauncher", "https://zoom.us/j/81234567890"] or leaked:
+        failed += 1
+        print(f"FAIL zoom argv: {argv!r} {leaked}")
+    else:
+        print("ok   zoom argv omits pwd")
+
+    scheme = mod.parse_invite("zoommtg://zoom.us/join?confno=81234567890&pwd=TokenOnly")
+    argv = mod.launch_argv(scheme, executable=lambda path: path == "/usr/bin/zoom", flatpak_ready=no_flatpak)
+    leaked = _passcode_leaked(argv, ("TokenOnly",))
+    if argv != ["/usr/bin/zoom", "https://zoom.us/j/81234567890"] or leaked:
+        failed += 1
+        print(f"FAIL zoom scheme argv: {argv!r} {leaked}")
+    else:
+        print("ok   zoom scheme argv omits pwd")
 
     flatpak = mod.launch_argv(
         zoom,
         executable=lambda path: path == "/usr/bin/flatpak",
         flatpak_ready=lambda app: app == mod.ZOOM_FLATPAK,
     )
-    if flatpak != ["/usr/bin/flatpak", "run", "--", mod.ZOOM_FLATPAK, zoom.join_url()]:
+    leaked = _passcode_leaked(flatpak, ("TokenOnly",))
+    if flatpak != ["/usr/bin/flatpak", "run", "--", mod.ZOOM_FLATPAK, zoom.join_url()] or leaked:
         failed += 1
-        print(f"FAIL zoom flatpak argv: {flatpak!r}")
+        print(f"FAIL zoom flatpak argv: {flatpak!r} {leaked}")
     else:
-        print("ok   zoom flatpak argv")
+        print("ok   zoom flatpak argv omits pwd")
 
     ambiguous = mod.parse_invite("Meeting ID: 81234567890")
     if mod.launch_argv(ambiguous, executable=lambda _path: True, flatpak_ready=lambda _app: True) is not None:
@@ -291,6 +356,32 @@ def test_launch_argv() -> int:
         print(f"FAIL launch candidates: {called!r}")
     else:
         print("ok   launch candidates are fixed")
+
+    launched: list[list[str]] = []
+    original = mod.spawn_detached
+
+    def record(argv: list[str]) -> bool:
+        launched.append(list(argv))
+        return True
+
+    mod.spawn_detached = record
+    try:
+        code = mod.main(
+            [
+                "--text",
+                "https://zoom.us/j/81234567890?pwd=TokenOnly",
+                "--no-notify",
+                "--client-arg",
+                "https://zoom.us/j/81234567890?pwd=TokenOnly",
+            ]
+        )
+    finally:
+        mod.spawn_detached = original
+    if launched or code == 0:
+        failed += 1
+        print(f"FAIL client-arg restored pwd: rc={code} launched={launched!r}")
+    else:
+        print("ok   client-arg cannot put pwd on the command line")
     return failed
 
 

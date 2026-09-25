@@ -58,7 +58,7 @@ Copy a meeting invite, then left-click the icon. A notification names the result
 | Clipboard | Result |
 |---|---|
 | A join link on `teams.microsoft.com`, `teams.live.com`, or `teams.cloud.microsoft` | Opens that link in teams-for-linux. `https://aka.ms/JoinTeamsMeeting` is ignored. |
-| A labeled meeting id of 12 to 16 digits, or a grouped number of that length | Opens `https://teams.microsoft.com/meet/<id>` in teams-for-linux. A labeled passcode is added as `p=`. |
+| A labeled meeting id of 12 to 16 digits, or a grouped number of that length | Opens `https://teams.microsoft.com/meet/<id>` in teams-for-linux. A labeled passcode is not added to that link. |
 | `https://….zoom.us/j/<id>`, `/wc/join/<id>`, `/my/<name>`, or `zoommtg://zoom.us/join?confno=<id>` | Opens that meeting in Zoom. |
 | A labeled meeting id of 9 to 11 digits and no join link | Nothing opens. |
 | A Teams link and a Zoom link, two different meetings, or a Zoom link beside a different 12 to 16 digit id | Nothing opens. |
@@ -68,12 +68,12 @@ Zoom publishes meeting ids of 9, 10, or 11 digits. Older Teams ids use that same
 
 Deleting an entry in the clipboard panel takes it off that list immediately. The previous copy can still be pasted by other programs until something else is copied. The click follows the panel: a deleted invite does not open Teams or Zoom.
 
-When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A Zoom link keeps the `pwd` value already on that link. The separate human passcode in the invite is not copied into `pwd`.
+When one Teams invite contains both the long `meetup-join` link and a short `/meet/` link, the long link is used. A passcode carried as Teams `p` or Zoom `pwd` is removed before the meeting app starts. The human passcode printed in a Zoom invite is not copied onto the link. The meeting app asks for the passcode when the meeting requires one. Other Teams parameters, including `context`, stay on the link.
 
 The notification text is one of:
 
-- Opening Teams.
-- Opening Zoom.
+- Opening Teams. Enter the passcode there if it asks.
+- Opening Zoom. Enter the passcode there if it asks.
 - Copy a Teams or Zoom invite, then click the calendar icon.
 - No Teams or Zoom join link was found.
 - That invite was removed from the clipboard.
@@ -91,7 +91,7 @@ The icon starts `/usr/bin/python3 -I -S` on `teams-join-from-clipboard.py --plug
 
 That process reads clipboard text, at most 64 KiB, with a three-second deadline. A larger clipboard is refused and not parsed. It tries `wl-paste` for `text/plain`, then one untyped `wl-paste` read when that returns nothing. Images and other non-text are not parsed. The notification then says the clipboard could not be read. The clipboard text is not passed as a program argument.
 
-The join link is then an argument to the meeting app, which is how teams-for-linux (`--url`) and Zoom (the link itself) accept a meeting. A Teams link can contain a passcode, and a Zoom link can contain `pwd`. That argument is not written to a file and not shown in the notification. The app is a fixed path from the table above, or `flatpak run` of the matching Flatpak id. It is not chosen from `PATH` or from an environment variable.
+The join link is then an argument to the meeting app, which is how teams-for-linux (`--url`) and Zoom (the link itself) accept a meeting. Teams `p` and Zoom `pwd` are removed before that command is started, so the passcode is not on the client's command line while the meeting stays open. That argument is not written to a file and not shown in the notification. The app is a fixed path from the table above, or `flatpak run` of the matching Flatpak id. It is not chosen from `PATH` or from an environment variable.
 
 The plugin makes no network request and writes no file. teams-for-linux then loads the Teams host in the link. Zoom loads the `zoom.us` host in the link. Those requests belong to the meeting app.
 
@@ -106,7 +106,7 @@ python3 teams-join-from-clipboard.py --dry-run --file fixtures/required-invite.t
 python3 test_parse.py
 ```
 
-`--dry-run`, `--print-url`, and `--json` print the join link on the terminal. That link can contain a passcode. The bar does not use those flags. It runs `--plugin`, which prints only a short status line with the app name and the reason.
+`--dry-run`, `--print-url`, and `--json` print the join link on the terminal. That link has no Teams `p` or Zoom `pwd` parameter. `--dry-run` and `--json` also print a passcode when one was written in the invite. The bar does not use those flags. It runs `--plugin`, which prints only a short status line with the app name and the reason.
 
 `fixtures/required-invite.txt` is the Outlook-shaped invite the tests have to keep opening through its `meetup-join` link.
 
